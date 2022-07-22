@@ -1,0 +1,25 @@
+From eb70696608125b69d3326aba8103f07b6200d07e Mon Sep 17 00:00:00 2001
+From: "Tong, Bo" <bo.tong@intel.com>
+Date: Tue, 10 Aug 2021 10:27:34 +0800
+Subject: [PATCH 2/2] Activate the weston launcher app automatically
+
+Signed-off-by: Tong, Bo <bo.tong@intel.com>
+---
+ clients/desktop-shell.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/clients/desktop-shell.c b/clients/desktop-shell.c
+index bde5dc82..27b1d5ac 100644
+--- a/clients/desktop-shell.c
++++ b/clients/desktop-shell.c
+@@ -730,6 +730,7 @@ panel_add_launcher(struct panel *panel, const char *icon, const char *path)
+ 				  panel_launcher_redraw_handler);
+ 	widget_set_motion_handler(launcher->widget,
+ 				  panel_launcher_motion_handler);
++	panel_launcher_activate(launcher);
+ }
+ 
+ enum {
+-- 
+2.25.1
+

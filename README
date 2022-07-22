@@ -1,0 +1,60 @@
+#!/bin/sh
+
+
+## BUILD WIC ##
+# global build env
+export WLD=$PWD/install   # change this to another location if you prefer
+export LD_LIBRARY_PATH=$WLD/lib/x86_64-linux-gnu
+export LIBRARY_PATH=$WLD/lib/x86_64-linux-gnu
+export PKG_CONFIG_PATH=$WLD/lib/x86_64-linux-gnu/pkgconfig:$WLD/share/pkgconfig
+export PATH=$WLD/bin:$PATH
+export WIC_IMAGE=$PWD/release/wic
+export WIC_PATCH=$PWD/wic_patch
+
+# libremote env
+export REMOTE_DIR=$PWD/libremote
+export REMOTE_LIB=$REMOTE_DIR/libremote.so
+export REMOTE_HEADER=$REMOTE_DIR/RemoteDeviceWrapper.h
+
+echo "\nBuild libremote\n"
+cd $REMOTE_DIR
+./build_libremote.sh
+cd ..
+
+echo "\nCopy libremote and header file for wic to send gbm buffer fd to streamer\n"
+mkdir -p $LIBRARY_PATH
+mkdir -p $WLD/include
+cp $REMOTE_LIB $LIBRARY_PATH
+cp $REMOTE_HEADER $WLD/include
+
+echo "\nInstall required packages for building wayland/weston\n"
+sudo apt install -y meson ninja-build weston > /dev/null
+
+echo "\nDownload and build wayland libraries\n"
+git clone https://gitlab.freedesktop.org/wayland/wayland.git
+cd wayland
+meson build/ --prefix=$WLD > /dev/null
+sudo ninja -C build/ install > /dev/null
+cd ..
+
+echo "\nDownload and build wayland core protocol\n"
+git clone https://gitlab.freedesktop.org/wayland/wayland-protocols.git 
+cd wayland-protocols
+meson build/ --prefix=$WLD > /dev/null
+sudo ninja -C build/ install > /dev/null
+cd ..
+
+echo "\nDownload and build weston (8.0)\n"
+git clone https://gitlab.freedesktop.org/wayland/weston.git
+cd weston
+git checkout -f -b 8.0 origin/8.0
+git am $WIC_PATCH/*    # apply wic patch
+meson build/ --prefix=$WLD -Dbackend-drm-screencast-vaapi=false -Dbackend-rdp=false -Dremoting=false -Dpipewire=false > /dev/null
+sudo ninja -C build/ install > /dev/null
+cd ..
+
+echo "\nCopy requried lib and bin to docker image dir ($WIC_IMAGE)\n"
+mkdir -p $WIC_IMAGE/x86_64-linux-gnu/libweston-8
+cp $REMOTE_LIB $WIC_IMAGE/x86_64-linux-gnu/
+cp $LIBRARY_PATH/libweston-8/headless-backend.so $WIC_IMAGE/x86_64-linux-gnu/libweston-8/
+cp $WLD/libexec/weston-desktop-shell $WIC_IMAGE/x86_64-linux-gnu/
