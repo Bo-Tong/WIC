@@ -1,0 +1,158 @@
+From 701da7a1005e63cc530391f942322627db30fe9f Mon Sep 17 00:00:00 2001
+From: Huang Rui1 <rui1.huang@intel.com>
+Date: Fri, 14 May 2021 21:13:05 +0800
+Subject: [PATCH] Change cros_gralloc_handle to gbm_import_fd_data
+
+Signed-off-by: Tong, Bo <bo.tong@intel.com>
+---
+ include/VideoSourceGbmApi.h  |  2 +-
+ include/display-protocol.h   |  2 ++
+ source/VideoSourceGbmApi.cpp | 50 +++++++++++++++---------------------
+ 3 files changed, 23 insertions(+), 31 deletions(-)
+
+diff --git a/include/VideoSourceGbmApi.h b/include/VideoSourceGbmApi.h
+index 3dfeb16..5ea854c 100644
+--- a/include/VideoSourceGbmApi.h
++++ b/include/VideoSourceGbmApi.h
+@@ -43,7 +43,7 @@ private:
+     bool mStop = false;
+     int mSockClientFd = -1;
+     std::mutex mBuffersMutex;
+-    std::map<uint64_t, cros_gralloc_handle_t> mHandles;
++    std::map<uint64_t, gbm_import_fd_data_t> mHandles;
+     std::map<uint64_t, gbm_bo*> mBuffers;
+ 
+     uint64_t mFrontBufferHandle = 0;
+diff --git a/include/display-protocol.h b/include/display-protocol.h
+index 1255988..13ac8b4 100644
+--- a/include/display-protocol.h
++++ b/include/display-protocol.h
+@@ -1,6 +1,7 @@
+ #ifndef _DISPLAY_PROTOCOL_H_
+ #define _DISPLAY_PROTOCOL_H_
+ 
++#include <gbm.h>
+ #include <stdint.h>
+ #include <sys/cdefs.h>
+ #include <sys/types.h>
+@@ -152,5 +153,6 @@ struct cros_gralloc_handle {
+ };
+ 
+ typedef struct cros_gralloc_handle* cros_gralloc_handle_t;
++typedef struct gbm_import_fd_data* gbm_import_fd_data_t;
+ 
+ #endif
+diff --git a/source/VideoSourceGbmApi.cpp b/source/VideoSourceGbmApi.cpp
+index fd00504..6d2e8d9 100644
+--- a/source/VideoSourceGbmApi.cpp
++++ b/source/VideoSourceGbmApi.cpp
+@@ -26,11 +26,11 @@ VideoSourceGbmApi::~VideoSourceGbmApi() {
+ 
+     AIC_LOG(DEBUG, "prepare to close ashmem fd, size %d", (int)mHandles.size());
+     std::unique_lock<std::mutex> lk(mBuffersMutex);
+-    std::map<uint64_t, cros_gralloc_handle_t>::iterator it;
++    std::map<uint64_t, gbm_import_fd_data_t>::iterator it;
+     for (it = mHandles.begin(); it != mHandles.end();) {
+ 	auto handle = it->second;
+         if (handle) {
+-            close(handle->fds[0]);
++            close(handle->fd);
+             free(handle);
+         }
+         it = mHandles.erase(it);
+@@ -88,16 +88,14 @@ int VideoSourceGbmApi::getBufferInfo(VideoFrameInfo* info) {
+ 
+     {
+         std::unique_lock<std::mutex> lk(mBuffersMutex);
+-        cros_gralloc_handle_t handle = mHandles[mFrontBufferHandle];
++        gbm_import_fd_data_t handle = mHandles[mFrontBufferHandle];
++
+ 
+         info->format = handle->format;
+-        info->fd = handle->fds[0];
+-        info->modifier = handle->format_modifiers[1];
+-        info->modifier <<= 32;
+-        info->modifier += handle->format_modifiers[0];
++        info->fd = handle->fd;
+         info->width = handle->width;
+         info->height = handle->height;
+-        info->stride = handle->strides[0];
++        info->stride = handle->stride;
+         info->frame_num = mFrameNum;
+ 
+         // printf("get bufferInfo with %" PRIx64 ", fd=%d dup from %d\n ",
+@@ -134,7 +132,7 @@ int VideoSourceGbmApi::lockFrontBuffer(uint8_t** data, uint32_t* stride) {
+         return -1;
+     }
+ 
+-    cros_gralloc_handle_t handle = mHandles[mFrontBufferHandle];
++    gbm_import_fd_data_t handle = mHandles[mFrontBufferHandle];
+     mLockedBo = mBuffers[mFrontBufferHandle];
+ 
+     *data = (uint8_t*)gbm_bo_map(mLockedBo, 0, 0, handle->width, handle->height,
+@@ -282,7 +280,7 @@ int VideoSourceGbmApi::createBuffer(int fd, int size) {
+         AIC_LOG(DEBUG, "Wrong buffer size %d to recv", size);
+         return -1;
+     }
+-    auto handle = (cros_gralloc_handle_t)malloc(size - sizeof(ev));
++    auto handle = (gbm_import_fd_data_t)malloc(size - sizeof(ev));
+     if (handle == nullptr) {
+         AIC_LOG(ERROR, "Failed to allocate local buffer handle");
+         ret = -errno;
+@@ -300,33 +298,25 @@ int VideoSourceGbmApi::createBuffer(int fd, int size) {
+         return -1;
+     }
+ 
+-    recvFds(fd, handle->fds, handle->base.numFds);
+-    std::pair<std::map<uint64_t, cros_gralloc_handle_t>::iterator, bool> rent =
+-	    mHandles.insert(std::make_pair(ev.info.remote_handle, handle));
++    int32_t fds[0];
++    recvFds(fd, fds, 1);
++    handle->fd = fds[0];
+ 
+-    struct gbm_import_fd_data fdData = {.fd = handle->fds[0],
+-                                        .width = handle->width,
+-                                        .height = handle->height,
+-                                        .stride = handle->strides[0],
+-                                        .format = handle->format};
++    std::pair<std::map<uint64_t, gbm_import_fd_data_t>::iterator, bool> rent =
++            mHandles.insert(std::make_pair(ev.info.remote_handle, handle));
+ 
+-    gbm_bo* bo = gbm_bo_import(mGbmDev, GBM_BO_IMPORT_FD, &fdData, 0);
++    gbm_bo* bo = gbm_bo_import(mGbmDev, GBM_BO_IMPORT_FD, handle, 0);
+     mBuffers.insert(std::make_pair(ev.info.remote_handle, bo));
+ 
+-    AIC_LOG(DEBUG, "Receive buffer with %" PRId64 ", numFds=%d, fd0=%d",
+-            ev.info.remote_handle, handle->base.numFds, handle->fds[0]);
++    AIC_LOG(DEBUG, "Receive buffer with %" PRId64 ", numFds=1, fd0=%d",
++            ev.info.remote_handle, handle->fd);
+     AIC_LOG(DEBUG,
+-        "Import fd as gbm buffer:bo=%p, fd=%d w=%d h=%d s=%d f=%x droid_f=%d "
+-        "modifier0=%d, modifier1=%d, use_flag0=%d use_flag1=%d usage=%.8x "
+-        "offset=%.8x size=%.8x",
+-        bo, handle->fds[0], handle->width, handle->height, handle->strides[0],
+-        handle->format, handle->droid_format, handle->format_modifiers[0],
+-        handle->format_modifiers[1], handle->use_flags[0], handle->use_flags[1],
+-        handle->usage, handle->offsets[0], handle->sizes[0]);
++        "Import fd as gbm buffer:bo=%p, fd=%d w=%d h=%d s=%d f=%x",
++        bo, handle->fd, handle->width, handle->height, handle->stride, handle->format);
+ 
+     if (!rent.second) {
+         if (handle) {
+-            close(handle->fds[0]);
++            close(handle->fd);
+             free(handle);
+         }
+     }
+@@ -402,7 +392,7 @@ int VideoSourceGbmApi::removeBuffer(int fd) {
+       gbm_bo_destroy(bo);
+     }
+     if (handle) {
+-      close(handle->fds[0]);
++      close(handle->fd);
+       free(handle);
+     }
+ 
+-- 
+2.34.1
+

@@ -1,0 +1,197 @@
+#!/bin/bash
+
+SELF=`basename $0`
+
+function err() {
+  echo "ERR $SELF $$ ${FUNCNAME[1]}: $@" >&2
+}
+
+function dbg {
+  echo "DBG $SELF $$ ${FUNCNAME[1]}: $@" >&2
+}
+
+function main() {
+  dbg "start"
+
+  local id="$(id)"
+  local k8s=${K8S_ENV:-"false"}
+  local k8s_stateless=${K8S_ENV_STATELESS:-"false"}
+  local encoded_source=${K8S_ENV_USE_ENCODED_FRAME:-"false"}
+  local host_gfx=${K8S_ENV_USE_HOST_GFX:-"false"}
+  local url="http://127.0.0.1:8095"
+  local help=$(cat <<EOF
+Usage: $SELF [-i <id>] [-k] [-e] [-h] <url>
+  Streamer provide streaming service between AIC and WebRTC client
+
+  -i <id>: instance ID, default: $id
+  -e:      use encoded source or not, default: $encoded_source
+  -k:      is k8s environment or not, default: $k8s
+  -h:      print the usage message
+  <url>:   url to signaling server in format "http://ip:port"
+
+Environment variables:
+  INSTANCE_ID: "$INSTANCE_ID"
+  MY_POD_NAME: "$MY_POD_NAME"
+  K8S_ENV: "$K8S_ENV"
+  K8S_ENV_STATELESS: "$K8S_ENV_STATELESS"
+  K8S_ENV_USE_ENCODED_FRAME: "$K8S_ENV_USE_ENCODED_FRAME"
+EOF
+)
+
+  while getopts ":e:i:kh" opt
+  do
+    case $opt in
+      e ) encoded_source="true";;
+      i ) id=$OPTARG;;
+      k ) k8s="true";;
+      h ) echo "$help" && exit;;
+      * ) echo "no such option: $opt" && exit 1;;
+    esac
+  done
+  shift $((OPTIND-1))
+
+  if [[ -n "$1" ]]; then
+    url="$1"
+    if [[ "$url" =~ ^https?:// ]]; then
+      wait_url "$url"
+    else
+      err "url ($url) is not valid"
+      echo "$help"
+      exit 1
+    fi
+  else
+    err "signaling server url is required"
+    echo "$help"
+    exit 1
+  fi
+
+  if [[ "$k8s_stateless" == "true" ]]; then
+    id=0
+    wait_file "/conn/stateless/id"
+    export K8S_ENV_STATELESS_ID=$(cat /conn/stateless/id)
+  fi
+
+  dbg "k8s:$k8s, id:$id, encoded_source:$encoded_source url:$url VIRTUAL_INPUT_NUM=$VIRTUAL_INPUT_NUM"
+  init
+
+  local ipc files
+  if [[ "$k8s" == "true" ]]; then
+    ipc="/conn"
+    files="hwc-sock"
+    if [[ $VIRTUAL_INPUT_NUM -gt 0 ]]; then
+      for ((i=0;i<$VIRTUAL_INPUT_NUM; i++)); do
+        files="input-pipe-$i $files"
+      done
+    fi
+  else
+    ipc="/workdir/ipc"
+    files="hwc-sock${id}"
+    if [[ $VIRTUAL_INPUT_NUM -gt 0 ]]; then
+      for ((i=0;i<$VIRTUAL_INPUT_NUM; i++)); do
+        files="input-pipe${id}-$i $files"
+      done
+    fi
+  fi
+  for f in $files; do
+    # Don't wait any ipc file for host gfx mode
+    if [[ $host_gfx == "true" ]]; then
+      continue;
+    fi
+    if [[ $encoded_source == "true" && $f =~ hwc-sock ]]; then
+      continue
+    fi
+    wait_file "${ipc}/${f}"
+  done
+
+  local extra_opts renderer
+  if [[ $encoded_source == "true" ]]; then
+    export K8S_ENV_USE_ENCODED_FRAME="$encoded_source"
+    # TODO: use dedicated option to control it
+    export K8S_ENV_OWT_DISABLE_DROP_FRAME="true"
+    renderer="$(renderer $id $k8s)"
+    dbg "use encoded source, wait for renderer"
+    wait_url "$renderer"
+    extra_opts="-e $renderer"
+  fi
+
+  dbg "start pulseaudio"
+  # clean up to avoid pa start fail because of previous crash
+  rm -rf /tmp/pulse-*
+  # add following for debug: -v --log-target=file:/tmp/pa.log
+  pulseaudio --start
+
+  dbg "start aic_streamer"
+  LD_LIBRARY_PATH=/libs/linux:/libs/emugl aic_streamer --url "$url" --id "$id" $extra_opts &
+
+  spin
+}
+
+function wait_file() {
+  dbg "wait for $1"
+  while [[ ! -e "$1" ]]; do
+    # timeout for race condition when test
+    inotifywait -qq -t 5 -e create,moved_to "$(dirname $1)"
+  done
+  dbg "done"
+}
+
+function wait_url() {
+  dbg "wait for $1"
+  local url=${1#*://}
+  IFS=':' read -r host port <<<"$url"
+  while ! nc -z $host $port; do
+    sleep 2 # there is no better way, just sleep
+  done
+  dbg "done"
+}
+
+function id() {
+  dbg "start"
+  local id="0"
+  if [[ -n "$INSTANCE_ID" ]]; then
+    id="$INSTANCE_ID"
+  elif [[ -n "$MY_POD_NAME" ]]; then
+    id=${MY_POD_NAME#"android-"}
+  fi
+  dbg "done: id:$id"
+  echo "$id"
+}
+
+function renderer() {
+  local id=${1:-0}
+  local k8s=${2:-"false"}
+  dbg "start: id=$id, k8s=$k8s"
+  local ip="127.0.0.1"
+  local port=24432
+  if [[ $k8s != "true" ]]; then
+    ip="172.100.$((($id + 2) / 256)).$((($id + 2) % 256))"
+    port=$((port + id))
+  fi
+  dbg "done: url:$ip:$port"
+  echo "$ip:$port"
+}
+
+function init {
+  dbg "start"
+  trap exit TERM INT
+  trap finish EXIT
+  dbg "done"
+}
+
+function finish {
+  dbg "start"
+  # kill all the childen
+  kill -9 $(ps -o pid= --ppid $$) 2>/dev/null
+  dbg "done"
+}
+
+function spin {
+  dbg "wait forever"
+  while true; do
+    sleep infinity &
+    wait $!
+  done
+}
+
+# here we go
+main "$@"

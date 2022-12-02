@@ -1,0 +1,2 @@
+#!/bin/bash
+weston --xwayland -B headless-backend.so --use-gl --width=1920 --height=1080 --log=weston.log

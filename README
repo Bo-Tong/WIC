@@ -1,6 +1,5 @@
 #!/bin/sh
 
-
 ## BUILD WIC ##
 # global build env
 export WLD=$PWD/install   # change this to another location if you prefer
@@ -8,8 +7,12 @@ export LD_LIBRARY_PATH=$WLD/lib/x86_64-linux-gnu
 export LIBRARY_PATH=$WLD/lib/x86_64-linux-gnu
 export PKG_CONFIG_PATH=$WLD/lib/x86_64-linux-gnu/pkgconfig:$WLD/share/pkgconfig
 export PATH=$WLD/bin:$PATH
-export WIC_IMAGE=$PWD/release/wic
+
 export WIC_PATCH=$PWD/wic_patch
+export STREAMER_PATCH=$PWD/streamer_patch
+
+export WIC_IMAGE=$PWD/release/wic
+export STREAMER_IMAGE=$PWD/release/streamer
 
 # libremote env
 export REMOTE_DIR=$PWD/libremote
@@ -58,3 +61,21 @@ mkdir -p $WIC_IMAGE/x86_64-linux-gnu/libweston-8
 cp $REMOTE_LIB $WIC_IMAGE/x86_64-linux-gnu/
 cp $LIBRARY_PATH/libweston-8/headless-backend.so $WIC_IMAGE/x86_64-linux-gnu/libweston-8/
 cp $WLD/libexec/weston-desktop-shell $WIC_IMAGE/x86_64-linux-gnu/
+
+echo "\nDownload aic_streamer code and build streamer image\n"
+echo "\nYou may need apply access for the source code first!\n"
+git clone https://github.com/intel-innersource/os.android.cloud.aic-streamer.git
+cd os.android.cloud.aic-streamer
+git am $STREAMER_PATCH/*    # apply streamer patch
+sudo apt install -y libavcodec-dev libswscale-dev libavformat-dev libavfilter-dev
+mkdir -p build && cd build
+cmake .. && make
+cd ..
+
+echo "\nCopy requried lib and bin to docker image dir ($STREAMER_IMAGE)\n"
+mkdir -p $STREAMER_IMAGE/bin $STREAMER_IMAGE/libs/linux
+cp bin/linux/aic_streamer $STREAMER_IMAGE/bin
+cp libs/linux $STREAMER_IMAGE/libs -r
+echo "Done"
+
+echo "\nNow you can run wic with run.sh\n"

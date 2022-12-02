@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+# author: joe.zheng
+
+set -e
+
+SELF="$(basename $0)"
+SELF_DIR="$(dirname "${BASH_SOURCE[0]}")"
+
+DATA_PROVISIONER="$SELF_DIR/setup-data" # optional
+
+DOCKER="sudo docker"
+if [[ "$(id -u)" == "0" ]] || id -nG | grep -qw docker; then
+  DOCKER="docker"
+fi
+
+# IP of the primary interface on the host
+DEFAULT_IP=$(ip route get 1 | head -1 | awk '{print $7}')
+
+PORT_SIGNALING=${PORT_SIGNALING:-'8095'}
+PORT_FRONT_END=${PORT_FRONT_END:-'30008'}
+
+TAG=${TAG:-alpha}        # load from environment if any
+IMAGESDEFAULT="coturn owt-server-p2p webrtc-front-end streamer wic"
+#IMAGESDEFAULT="wic"
+IMAGESESC="coturn owt-server-p2p webrtc-front-end esc-streamer"
+IMAGESDG2="coturn owt-server-p2p webrtc-front-end dg2-streamer"
+IMAGES="coturn owt-server-p2p webrtc-front-end streamer wic esc-streamer dg2-streamer"
+WORK_DIR="$(pwd)/workdir"
+
+function msg {
+  echo "> $@"
+}
+
+function err() {
+  echo "> $@" >&2
+}
+
+function main() {
+  local help=$(cat <<EOF
+Usage: $self COMMAND [OPTIONS] [ARG...]
+  Manage wic for cloud
+
+Commands:
+  install    install
+  uninstall  uninstall
+  start      start
+  stop       stop
+  info       show useful information
+
+Options:
+  -h:        print the usage message
+
+Run "$SELF COMMAND -h" for more information of a command
+EOF
+)
+
+  local cmd=$1
+  if [[ -n $cmd ]]; then
+    shift
+  else
+    echo "$help"
+    exit 1
+  fi
+
+  case $cmd in
+    install|uninstall|start|stop|info )
+      dumpvars "SELF SELF_DIR DEFAULT_IP PORT_SIGNALING PORT_FRONT_END \
+                DATA_PROVISIONER DOCKER TAG IMAGES cmd"
+      $cmd $@
+      ;;
+    help|-h ) echo "$help" && exit;;
+    * ) echo "no such command: $cmd" && exit 1;;
+  esac
+
+  msg "done"
+}
+
+function install() {
+  local cfg="-d,none,-e,-b,5590,-l,server"
+  local dir="$WORK_DIR"
+  local img="$(pwd)"
+  local num=1
+  local type=0
+  local size="1280x720"
+  local update="n"
+  local gfx="sw"
+  local stream_encoded_mode="false"
+  local gfx_opts="sw hw host"
+  local ip="$DEFAULT_IP"
+  local GPU_NODES=${GPU_NODES:-`lspci |grep VGA |grep Intel| wc |awk '{print $1}'`}
+  local input_num=2
+  local huge="false"
+  local STREAMER_NOTIFIER_PORT="9017"
+
+  local help=$(cat <<EOF
+Usage: $SELF install [-c <cfg>] [-d <dir>] [-i <ip>] [-n <num>] [-S <type>]
+  [-s <size>] [-g <gfx>] [-u] [-l] [-h] [<img>]
+  Install wic for cloud
+
+  -c <cfg>:  wic configuration, default: '$cfg'
+  -d <dir>:  work directory, default: $dir
+  -g <gfx>:  graphic stack [$gfx_opts], default: $gfx
+  -r <render nodes count> gpu render node number, default: 1
+  -i <ip>:   host IP address, default: $ip
+  -I <input_num>:   Virutal input number, default: $input_num
+  -n <num>:  number of instances, default: $num
+  -S <type>:  type of wic cloud,  default: $type, 0, default; 1, icr; 2, esc 3, wic; 4, dg2
+  -s <size>: display size in WxH formt, default: $size
+  -H:        use huge pages, default: $huge
+  -u:        update Android image, default: $update
+  -l:        Debug the latency
+  -h:        print the usage message
+  <img>:     image directory, default: $img
+
+WIC configuration:
+  The wic configuration provided by "-c" option will be passed to wic script,
+  all the whitespaces must be escaped or replaced by ",", this option will be
+  removed once the API is stable
+
+IP address:
+  The same host IP address will be used to access signaling server, front-end
+  web server and ICE server, the primary IP address is used as default, you
+  need to select the correct one when there are multiple network interfaces
+
+Data sharing:
+  We use data provisioner to setup data volume to support data sharing between
+  instances to save storage and improve performance, as well as ease the user
+  data management, current solution is based on overlayfs, each data has "base"
+  layer and the upper layer which stores the dalta
+
+  The single instance deployment is used to prepare "base" data layer, so the
+  common usage will be:
+  * deploy single instance: $SELF install -n 1
+  * prepare the "base" data layer, e.g. install app via adb
+  * deploy multiple instances, e.g. 4: $SELF install -n 4
+EOF
+)
+
+  while getopts ":c:d:i:I:g:n:S:s:r:lhueH" opt
+  do
+    case $opt in
+      c ) cfg=${OPTARG//,/ };;
+      d ) dir=$OPTARG;;
+      i ) ip=$OPTARG;;
+      I ) input_num=$OPTARG;;
+      g ) gfx=$OPTARG
+        if echo $gfx_opts | grep -v -w $gfx >/dev/null 2>&1; then
+          echo "invalid gfx option: $gfx"
+          echo "$help" && exit 1
+        fi
+        ;;
+      r ) GPU_NODES=$OPTARG;;
+      n ) num=$OPTARG;;
+      S ) type=$OPTARG;;
+      s ) size=$OPTARG;;
+      H ) huge="true";;
+      u ) update="y";;
+      l ) privileged="true";;
+      h ) echo "$help" && exit;;
+      * ) echo "no such option: $opt" && exit 1;;
+    esac
+  done
+  shift $((OPTIND-1))
+
+  img=${1:-$img}
+  cfg=${cfg//,/ }
+
+  local width
+  local height
+  IFS="x" read width height <<< "$size"
+
+  dumpvars "cfg dir img ip num gfx update size"
+
+  IMAGES=$IMAGESDEFAULT
+
+  case $type in
+    0 ) ;;
+    1 ) stream_encoded_mode="true";;
+    2 ) IMAGES=$IMAGESESC;;
+    3 ) IMAGES=$IMAGESWIC
+        stream_encoded_mode="true";;
+    4 ) IMAGES=$IMAGESDG2;;
+    * ) echo "no type available" && exit 1;;
+  esac
+
+  # uninstall first if necessary
+  [[ -n "$(containers -a $IMAGES)" ]] && uninstall
+
+  if [[ -f "$DATA_PROVISIONER" ]]; then
+    msg "setup data volume"
+    if (( num == 1 )); then
+      msg 'use instance 0 to prepare "base" layer'
+      BASE_ID=0 PREFIX=data $DATA_PROVISIONER -n $num $dir
+    else
+      BASE_ID=none PREFIX=data $DATA_PROVISIONER -n $num $dir
+    fi
+  else
+    msg "no $DATA_PROVISIONER available, skip"
+  fi
+
+  # install docker network driver
+  if [ -z "$($DOCKER network ls | grep android)" ]; then
+      echo "[WIC] Create android network driver..."
+      $DOCKER network create android --subnet=172.100.0.0/16 --gateway=172.100.0.1 -o "com.docker.network.bridge.name"="br-android" -o "com.docker.network.bridge.enable_icc"="true"
+
+  fi
+
+  msg "install containers"
+  for name in $IMAGES; do
+    file=${img}/${name}*.tar.gz
+    image=${name}:${TAG}
+
+    msg "load $file"
+    old=$($DOCKER load -i $file | sed -n 's/Loaded image[^:]*:\s*//p')
+    msg "tag $old as $image"
+    $DOCKER tag $old $image
+
+    msg "create container from $image"
+    case "$name" in
+      coturn )
+        $DOCKER create --name $name --net host -e http_proxy -e no_proxy $image
+        ;;
+      owt-server-p2p )
+        $DOCKER create --name $name -p $PORT_SIGNALING:8095 $image
+        ;;
+      webrtc-front-end )
+        $DOCKER create --name $name -p $PORT_FRONT_END:8000 -e MASTER_NODE_IP=$ip $image
+        ;;
+      streamer )
+        local signaling="http://$ip:$PORT_SIGNALING"
+        local envs="-e K8S_ENV_DISPLAY_RESOLUTION_X=$width -e K8S_ENV_DISPLAY_RESOLUTION_Y=$height -e VIRTUAL_INPUT_NUM=$input_num"
+        local mnts="-v $dir/ipc:/workdir/ipc"
+
+        if [[ "$gfx" == "hw" ]] && [[ "$stream_encoded_mode" == "true" ]]; then
+	  envs="$envs -e K8S_ENV_USE_ENCODED_FRAME=true"
+        elif [[ "$gfx" == "hw" ]] && [[ "$stream_encoded_mode" == "false" ]]; then
+          envs="$envs -e K8S_ENV_USE_GFX=true -e K8S_ENV_OWT_DISABLE_DROP_FRAME=true"
+          mnts="$mnts --device /dev/dri:/dev/dri"
+        elif [[ "$gfx" == "host" ]] && [[ "$stream_encoded_mode" == "false" ]]; then
+          envs="$envs -e K8S_ENV_USE_HOST_GFX=true -e K8S_ENV_OWT_DISABLE_DROP_FRAME=true"
+          mnts="$mnts --device /dev/dri:/dev/dri"
+        fi
+
+        local args="--net android $image"
+        for ((i=0; i<$num; i++)); do
+          $DOCKER create --name $name$i $envs $mnts $args -i $i $signaling
+        done
+        ;;
+      esc-streamer)
+        local args="--net android --device /dev/dri:/dev/dri $image"
+        local envs="-e VIRTUAL_INPUT_NUM=$input_num"
+        local mnts="-v $(pwd):/workspace/WIC"
+        for ((i = 0; i < $num; i++)); do
+          $DOCKER create --name $name$i $envs $mnts $args -i $i $ip
+      done
+      ;;
+      dg2-streamer)
+        local DEVICE=${DEVICE:-/dev/dri/renderD128}
+        local DEVICE_GRP=$(ls -g $DEVICE | awk '{print $3}' | xargs getent group | awk -F: '{print $3}')
+        local envs="-e DEVICE=$DEVICE -e P2P=$ip -e K8S_ENV_DISPLAY_RESOLUTION_X=$width -e K8S_ENV_DISPLAY_RESOLUTION_Y=$height"
+        local args="--net android --cap-add SYS_ADMIN --device $DEVICE --group-add $DEVICE_GRP $image"
+        local mnts="-v $(pwd)/workdir:/opt/workdir"
+
+	# force to use CQP before BRC can work
+	envs="$envs -e K8S_ENV_FORCE_CQP=true"
+
+        for ((i = 0; i < $num; i++)); do
+          $DOCKER create --name $name$i $envs $mnts $args -i $i $ip
+        done
+      ;;
+      wic)
+        local mnts="-v $dir/ipc:/workdir/ipc"
+        mnts="$mnts --device /dev/dri:/dev/dri"
+        local envs="-e WORKDIR_IPC=/workdir/ipc/ -e http_proxy -e https_proxy"
+
+        for ((i = 0; i < $num; i++)); do
+          envs="$envs -e CONTAINER_ID=$i"
+          $DOCKER create --name $name$i $envs $mnts $image
+      done
+      ;;
+      * ) echo "invalid image $i" && exit 1;;
+    esac
+  done
+
+#msg "install wic"
+#local args="-n $num -p $dir -r $size"
+
+}
+
+function uninstall() {
+  local dir="$WORK_DIR"
+
+  local help=$(cat <<EOF
+Usage: $SELF uninstall [-h]
+  Uninstall wic for cloud
+
+  -d <dir>:  work directory, default: $dir
+  -h:        print the usage message
+EOF
+)
+
+  while getopts ":d:h" opt
+  do
+    case $opt in
+      d ) dir=$OPTARG;;
+      h ) echo "$help" && exit;;
+      * ) echo "no such option: $opt" && exit 1;;
+    esac
+  done
+  shift $((OPTIND-1))
+
+  dumpvars "dir"
+
+  # stop first if it is running
+  [[ -n "$(containers $IMAGES)" ]] && stop
+
+  msg "uninstall other containers"
+  for n in $(containers -a $IMAGES); do
+    msg "remove container: $n"
+    $DOCKER rm -f $n
+  done
+
+  msg "uninstall images"
+  for n in $(images $IMAGES); do
+    msg "remove image: $n"
+    $DOCKER rmi -f $n
+  done
+
+  if [[ -f "$DATA_PROVISIONER" ]]; then
+    msg "detach data volume"
+    PREFIX=data $DATA_PROVISIONER -D $dir
+  fi
+}
+
+function start() {
+  local help=$(cat <<EOF
+Usage: $SELF start [-h]
+  Start wic for cloud
+
+  -h:        print the usage message
+EOF
+)
+
+  while getopts ":h" opt
+  do
+    case $opt in
+      h ) echo "$help" && exit;;
+      * ) echo "no such option: $opt" && exit 1;;
+    esac
+  done
+  shift $((OPTIND-1))
+
+  for n in $(containers -a $IMAGES); do
+    msg "start container: $n"
+    $DOCKER start $n
+  done
+}
+
+function stop() {
+  local help=$(cat <<EOF
+Usage: $SELF stop [-h]
+  Stop wic for cloud
+
+  -h:        print the usage message
+EOF
+)
+
+  while getopts ":h" opt
+  do
+    case $opt in
+      h ) echo "$help" && exit;;
+      * ) echo "no such option: $opt" && exit 1;;
+    esac
+  done
+  shift $((OPTIND-1))
+
+  for n in $(containers $IMAGES); do
+    msg "stop container: $n"
+    $DOCKER stop $n -t 0
+  done
+}
+
+function info() {
+  local help=$(cat <<EOF
+Usage: $SELF info [-h]
+  Show useful information
+
+  -h:        print the usage message
+EOF
+)
+
+  while getopts ":h" opt
+  do
+    case $opt in
+      h ) echo "$help" && exit;;
+      * ) echo "no such option: $opt" && exit 1;;
+    esac
+  done
+  shift $((OPTIND-1))
+
+  msg "Status:"
+  if [[ -n "$(containers $IMAGES)" ]]; then
+    echo "running"
+  elif [[ -n "$(containers -a $IMAGES)" ]]; then
+    echo "installed"
+  else
+    echo "uninstalled"
+  fi
+
+  msg "Images:"
+  for i in $(images $IMAGES); do
+    echo $i
+  done
+
+  msg "Containers:"
+  for i in $(containers -a $IMAGES); do
+    echo $i
+  done
+}
+
+# get container names by image tag and name prefix
+function containers() {
+  local opt=
+  # all the containers or not
+  if [[ $1 == "-a" ]]; then
+    opt=$1
+    shift
+  fi
+
+  for n in $@; do
+    $DOCKER ps $opt -f ancestor=$n:$TAG -f name=$n --format '{{.Names}}'
+  done
+}
+
+# get image names by image tag
+function images() {
+  for n in $@; do
+    [[ -n "$($DOCKER images -q $n:$TAG)" ]] && echo $n:$TAG
+  done
+}
+
+# dump variables
+function dumpvars() {
+  for v in $@; do
+    eval echo "$v: \${$v}"
+  done
+}
+
+main "$@"

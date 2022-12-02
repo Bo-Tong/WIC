@@ -1,0 +1,133 @@
+From 65cf612ee74d8fd8c63935f5f20634617f136f14 Mon Sep 17 00:00:00 2001
+From: "Tong, Bo" <bo.tong@intel.com>
+Date: Wed, 22 Sep 2021 15:17:52 +0800
+Subject: [PATCH 2/2] add mouse and key input support
+
+Signed-off-by: Tong, Bo <bo.tong@intel.com>
+---
+ source/DirectInputReceiver.cpp | 14 +++++++++--
+ source/InputController.cpp     | 45 ++++++++++++++++++++++++++++++++--
+ 2 files changed, 55 insertions(+), 4 deletions(-)
+
+diff --git a/source/DirectInputReceiver.cpp b/source/DirectInputReceiver.cpp
+index 0a99283..c8d6559 100644
+--- a/source/DirectInputReceiver.cpp
++++ b/source/DirectInputReceiver.cpp
+@@ -102,9 +102,11 @@ bool DirectInputReceiver::SendUp(int32_t slot, int32_t x, int32_t y) {
+ 
+ bool DirectInputReceiver::SendMove(int32_t slot, int32_t x, int32_t y,
+                                    int32_t pressure) {
+-  if ((uint32_t)slot >= kMaxSlot || !mContacts[slot].enabled) {
++
++  if (mDebug) AIC_LOG(mDebug, "slot:%d, mContacts[slot].enabled:%d",slot,mContacts[slot].enabled);
++  /*if ((uint32_t)slot >= kMaxSlot || !mContacts[slot].enabled) {
+     return false;
+-  }
++  }*/
+ 
+   SendEvent(EV_ABS, ABS_MT_SLOT, slot);
+   SendEvent(EV_ABS, ABS_MT_TOUCH_MAJOR, 0x00000004);
+@@ -145,6 +147,9 @@ bool DirectInputReceiver::ProcessOneCommand(const std::string &cmd) {
+   int32_t pressure = 0;
+   int32_t ms = 0;
+ 
++  uint16_t code;
++  int32_t value;
++
+   if (mDebug) AIC_LOG(mDebug, "cmd: %s", cmd.c_str());
+ 
+   switch (cmd[0]) {
+@@ -154,6 +159,11 @@ bool DirectInputReceiver::ProcessOneCommand(const std::string &cmd) {
+     case 'r':  // reset
+       SendReset();
+       break;
++    case 'k':  // key
++      sscanf(cmd.c_str(), "%c %" SCNu16 " %" SCNd32, &type, &code, &value);
++      if (mDebug) printf("code = %d, value = %d\n", code, value);
++      SendEvent(EV_KEY, code, value);
++      break;
+     case 'd':  // down
+       sscanf(cmd.c_str(), "%c %d %d %d %d", &type, &slot, &x, &y, &pressure);
+       SendDown(slot, x, y, pressure);
+diff --git a/source/InputController.cpp b/source/InputController.cpp
+index 857d4b2..2f2ff05 100644
+--- a/source/InputController.cpp
++++ b/source/InputController.cpp
+@@ -55,11 +55,13 @@ void* InputController::ConvertToSdlMessage(const std::string &json_message) {
+   std::string event_type = j["data"]["event"];
+   int inputId = 0; // ToDo: The client should transfer which inputId which want to be injected
+ 
++  //AIC_LOG(ERROR, "event_type:%s\n",event_type.c_str());
+   if (event_type == "mousemove") {
+     json event_param = j["data"]["parameters"];
+     int x = event_param["x"];
+     int y = event_param["y"];
+ 
++    //AIC_LOG(ERROR, "is_mouse:%d,x:%d,y:%d,is_pressed:%d\n",is_mouse,x,y,is_pressed);
+     if (is_mouse) {
+       UpdateCursorPosition(x, y);
+     } else {
+@@ -67,12 +69,12 @@ void* InputController::ConvertToSdlMessage(const std::string &json_message) {
+       abs_y = y;
+     }
+ 
+-    if (is_pressed) {
++    //if (is_pressed) {
+       char cmd[512];
+       sprintf(cmd, "m 0 %d %d 500\n",  x, y);
+       mInputReceiver[inputId]->onInputMessage(cmd);
+       mInputReceiver[inputId]->onInputMessage("c\n");
+-    }
++    //}
+   } else if (event_type == "mousedown") {
+     // Mouse click.
+     // sdlmsg_t m;
+@@ -104,6 +106,45 @@ void* InputController::ConvertToSdlMessage(const std::string &json_message) {
+     is_mouse = true;
+     mInputReceiver[inputId]->onInputMessage("u 0\n");
+     mInputReceiver[inputId]->onInputMessage("c\n");
++  } else if (event_type == "keydown") {
++    int key_value = -1;
++    json event_param = j["data"]["parameters"];
++    std::string key  = event_param["key"];
++    std::string code = event_param["code"];
++    if (key.compare("w") == 0) {
++        key_value = 17;
++    } else if (key.compare("a") == 0) {
++        key_value = 30;
++    } else if (key.compare("s") == 0) {
++        key_value = 31;
++    } else if (key.compare("d") == 0) {
++        key_value = 32;
++    } else if (key.compare("Escape") == 0) {
++        key_value = 1;
++    }
++    //AIC_LOG(ERROR, "key:%s,code:%s,key_value:%d\n",key.c_str(),code.c_str(),key_value);
++    char cmd[512];
++    sprintf(cmd, "k %d 1 \n", key_value);
++    mInputReceiver[inputId]->onInputMessage(cmd);
++  } else if (event_type == "keyup") {
++    int key_value = -1;
++    json event_param = j["data"]["parameters"];
++    std::string key  = event_param["key"];
++    std::string code = event_param["code"];
++    if (key.compare("w") == 0) {
++        key_value = 17;
++    } else if (key.compare("a") == 0) {
++        key_value = 30;
++    } else if (key.compare("s") == 0) {
++        key_value = 31;
++    } else if (key.compare("d") == 0) {
++        key_value = 32;
++    } else if (key.compare("Escape") == 0) {
++        key_value = 1;
++    }
++    char cmd[512];
++    sprintf(cmd, "k %d 0 \n", key_value);
++    mInputReceiver[inputId]->onInputMessage(cmd);
+   } else if (event_type == "sizechange") {
+     json event_param = j["data"]["parameters"]["rendererSize"];
+     if (event_param.size() < 2)
+-- 
+2.25.1
+

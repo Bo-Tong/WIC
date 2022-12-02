@@ -1,0 +1,9 @@
+export const USER_LOGGING = 'USER_LOGGING';
+export const USER_LOADED = 'USER_LOADED';
+export const USER_EXPIRED = 'USER_EXPIRED';
+export const USER_LOAD_ERROR = 'USER_LOAD_ERROR';
+export const USER_LOGOUT = 'USER_LOGOUT';
+
+export const USER_ENROLLING = 'USER_ENROLLING';
+export const USER_ENROLL_SUCCESS = 'USER_ENROLL_SUCCESS';
+export const USER_ENROLL_FAIL = 'USER_ENROLL_FAIL';

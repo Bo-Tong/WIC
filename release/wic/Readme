@@ -1,0 +1,13 @@
+#
+# Modify weston.ini to run your own binary (wayland or x11 app)
+# In the default weston.ini, we demo the alipay's homepage through google chrome browser. Please install required dependencies to make sure your app could be run in weston successfully.
+
+[launcher]
+icon=/usr/share/icons/hicolor/24x24/apps/google-chrome.png
+path=/usr/bin/google-chrome --no-sandbox --enable-features=UseOzonePlatform --ozone-platform=wayland -kiosk alipay.com
+
+# For example, if you want to run the weston-editor instead of chrome browser, you could change the path in the weston.ini. Currently, you can ignore the icon setting.
+
+[launcher]
+icon=/usr/share/icons/hicolor/24x24/apps/google-chrome.png
+path=/usr/bin/weston-editor
