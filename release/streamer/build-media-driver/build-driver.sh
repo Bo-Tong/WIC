@@ -16,15 +16,15 @@ if [ ! -d $ROOT/output ]; then
 fi
 
 if [ ! -d $ROOT/code/libva ]; then
-   git clone https://github.com/intel/libva.git $ROOT/code/libva
+   git clone https://github.com/intel/libva.git -b 2.13.0 $ROOT/code/libva
 fi
 
 if [ ! -d $ROOT/code/gmmlib ]; then
-   git clone https://github.com/intel/gmmlib.git $ROOT/code/gmmlib
+   git clone https://github.com/intel/gmmlib.git -b intel-gmmlib-21.3.1 $ROOT/code/gmmlib
 fi
 
 if [ ! -d $ROOT/code/media-driver ]; then
-   git clone https://github.com/intel/media-driver.git $ROOT/code/media-driver
+   git clone https://github.com/intel/media-driver.git -b intel-media-21.3.0 $ROOT/code/media-driver
 fi
 
 rm -rf /output/*

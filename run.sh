@@ -1,8 +1,9 @@
 #1 build intel media driver from open source code for streamer
-cd release/streamer/ && ./Readme
+cd release/streamer/ && ./Readme && cd -
 
 #2 config you own app in the weston container
-cd release/wic/ && cat Readme
+cat release/wic/Readme
+sleep 5
 
 #3 re-generate the docker images if needed.
 if [ -d image ]; then

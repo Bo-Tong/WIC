@@ -21,8 +21,10 @@ ARG USR=streamer
 ARG UID=1000
 ARG GID=1000
 
+# render group number should match with host's:
+# cat /etc/group |grep render. E.g., render:x:109:
 RUN groupadd -g $GID $USR && \
-    groupadd -g 110 -f render  && \
+    groupadd -g 109 -f render  && \
     useradd -m -g $USR -G audio,irc,render,video -u $UID -s /bin/bash $USR
 
 USER $USR

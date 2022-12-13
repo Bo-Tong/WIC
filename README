@@ -3,7 +3,7 @@
 ## BUILD WIC ##
 # global build env
 export WLD=$PWD/install   # change this to another location if you prefer
-export LD_LIBRARY_PATH=$WLD/lib/x86_64-linux-gnu
+export LD_LIBRARY_PATH=$WLD/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 export LIBRARY_PATH=$WLD/lib/x86_64-linux-gnu
 export PKG_CONFIG_PATH=$WLD/lib/x86_64-linux-gnu/pkgconfig:$WLD/share/pkgconfig
 export PATH=$WLD/bin:$PATH
@@ -20,62 +20,90 @@ export REMOTE_LIB=$REMOTE_DIR/libremote.so
 export REMOTE_HEADER=$REMOTE_DIR/RemoteDeviceWrapper.h
 
 echo "\nBuild libremote\n"
+sleep 3
 cd $REMOTE_DIR
 ./build_libremote.sh
 cd ..
 
 echo "\nCopy libremote and header file for wic to send gbm buffer fd to streamer\n"
+sleep 3
 mkdir -p $LIBRARY_PATH
 mkdir -p $WLD/include
 cp $REMOTE_LIB $LIBRARY_PATH
 cp $REMOTE_HEADER $WLD/include
 
 echo "\nInstall required packages for building wayland/weston\n"
-sudo apt install -y meson ninja-build weston > /dev/null
+sleep 3
+sudo apt install -y meson ninja-build weston graphviz doxygen xsltproc xmlto libpam-dev libxcb-composite0-dev liblcms2-dev libcolord-dev libsdl-pango-dev > /dev/null
 
 echo "\nDownload and build wayland libraries\n"
+sleep 3
 git clone https://gitlab.freedesktop.org/wayland/wayland.git
 cd wayland
-meson build/ --prefix=$WLD > /dev/null
-sudo ninja -C build/ install > /dev/null
+git checkout -f -b 1.19 1.19.0
+sudo rm -rf build
+meson build/ --prefix=$WLD
+sleep 3
+sudo ninja -C build/ install
 cd ..
 
 echo "\nDownload and build wayland core protocol\n"
+sleep 3
 git clone https://gitlab.freedesktop.org/wayland/wayland-protocols.git 
 cd wayland-protocols
-meson build/ --prefix=$WLD > /dev/null
-sudo ninja -C build/ install > /dev/null
+git checkout -f -b 1.21 1.21
+sudo rm -rf build
+meson build/ --prefix=$WLD
+sleep 3
+sudo ninja -C build/ install
 cd ..
 
 echo "\nDownload and build weston (8.0)\n"
+sleep 3
 git clone https://gitlab.freedesktop.org/wayland/weston.git
 cd weston
 git checkout -f -b 8.0 origin/8.0
-git am $WIC_PATCH/*    # apply wic patch
-meson build/ --prefix=$WLD -Dbackend-drm-screencast-vaapi=false -Dbackend-rdp=false -Dremoting=false -Dpipewire=false > /dev/null
-sudo ninja -C build/ install > /dev/null
+sudo cp $REMOTE_LIB /usr/lib/x86_64-linux-gnu/
+if [ ! -d build ]; then
+  git am $WIC_PATCH/*    # apply wic patch
+else
+  sudo rm -rf build
+fi
+meson build/ --prefix=$WLD -Dbackend-drm-screencast-vaapi=false -Dbackend-rdp=false -Dremoting=false -Dpipewire=false
+sleep 3
+sudo ninja -C build/ install
 cd ..
 
 echo "\nCopy requried lib and bin to docker image dir ($WIC_IMAGE)\n"
+sleep 3
 mkdir -p $WIC_IMAGE/x86_64-linux-gnu/libweston-8
 cp $REMOTE_LIB $WIC_IMAGE/x86_64-linux-gnu/
 cp $LIBRARY_PATH/libweston-8/headless-backend.so $WIC_IMAGE/x86_64-linux-gnu/libweston-8/
 cp $WLD/libexec/weston-desktop-shell $WIC_IMAGE/x86_64-linux-gnu/
 
 echo "\nDownload aic_streamer code and build streamer image\n"
-echo "\nYou may need apply access for the source code first!\n"
+sleep 3
 git clone https://github.com/intel-innersource/os.android.cloud.aic-streamer.git
+if [ ! -d os.android.cloud.aic-streamer ]; then
+  echo "\nYou may need apply access for the source code first!\n"
+  exit
+fi
 cd os.android.cloud.aic-streamer
-git am $STREAMER_PATCH/*    # apply streamer patch
+if [ ! -d build ]; then
+  git am $STREAMER_PATCH/*    # apply streamer patch
+  sudo rm -rf build
+fi
 sudo apt install -y libavcodec-dev libswscale-dev libavformat-dev libavfilter-dev
 mkdir -p build && cd build
 cmake .. && make
-cd ..
+cd ../
 
 echo "\nCopy requried lib and bin to docker image dir ($STREAMER_IMAGE)\n"
+sleep 3
 mkdir -p $STREAMER_IMAGE/bin $STREAMER_IMAGE/libs/linux
 cp bin/linux/aic_streamer $STREAMER_IMAGE/bin
 cp libs/linux $STREAMER_IMAGE/libs -r
+cd ..
 echo "Done"
 
 echo "\nNow you can run wic with run.sh\n"

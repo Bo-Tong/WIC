@@ -2,7 +2,9 @@
 #1. cd build-media-driver && ./build-media-in-docker.sh
 #2. rename the "output" folder as "media" and mv it to this folder.
 
-cd build-media-driver
-./build-media-in-docker.sh
-mv output media
-cp -r media ../
+if [ ! -d media ]; then
+  cd build-media-driver
+  ./build-media-in-docker.sh
+  sudo rm -rf code
+  mv output ../media
+fi
